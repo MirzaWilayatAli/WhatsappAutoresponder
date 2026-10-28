@@ -15,22 +15,19 @@ class WhatsAppListenerService : NotificationListenerService() {
         private const val WHATSAPP_PACKAGE = "com.whatsapp"
         private var lastProcessedKey: String = ""
 
-        // =================================================================
-        // SENDER-ONLY CONFIGURATION
-        // =================================================================
+        private val ALLOWED_SENDERS = listOf("Emily", "Mike", "Tina", "Lacey")
 
-        // Target Senders (Matches regardless of group or direct chat)
-        private val ALLOWED_SENDERS = listOf("Fabeha", "Maryam", "Bhai")
-
-        // Action/Shift Keywords
         private val SHIFT_KEYWORDS = listOf(
             "shift", "shifts", "available", "come in", "pick up", "free",
-            "hours", "cover", "covering", "need", "needed", "looking for", "slot"
+            "hours", "cover", "covering", "need", "needed", "looking for", "slot",
+            "register", "registers", "reg", "reg trained", "till", "tills",
+            "dtf", "door to floor", "flow", "flow shift",
+            "fitting", "fittings", "fitting room", "fitting rooms",
+            "maintenance", "door", "floor"
         )
 
-        // Time Pattern (Matches "1-6", "01:00-06:00", "12to5", "1pm", "14:00")
         private val TIME_REGEX = Regex(
-            """\b\d{1,2}(:\d{2})?\s*(am|pm)?\s*(-|to)\s*\d{1,2}(:\d{2})?\s*(am|pm)?\b|\b\d{1,2}\s*(-|to)\s*\d{1,2}\b|\b\d{1,2}(:\d{2})?\s*(am|pm)\b""",
+            """\b\d{1,2}(:\d{2})?\s*(am|pm)?\s*(-|to)\s*\d{1,2}(:\d{2})?\s*(am|pm)?\b|\b\d{1,2}(:\d{2})?\s*(am|pm)\b""",
             RegexOption.IGNORE_CASE
         )
 
@@ -46,13 +43,11 @@ class WhatsAppListenerService : NotificationListenerService() {
 
         val extras = sbn.notification.extras ?: return
 
-        // Extract raw notification headers
         val conversationTitle = extras.getString("android.conversationTitle") ?: ""
         val subText = extras.getString(Notification.EXTRA_SUB_TEXT) ?: ""
         val rawTitle = extras.getString(Notification.EXTRA_TITLE) ?: ""
         val rawTitleBig = extras.getString(Notification.EXTRA_TITLE_BIG) ?: ""
 
-        // Extract full message body (handles single text & multi-line bundled messages)
         val messageTextList = mutableListOf<String>()
         extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.let { messageTextList.add(it) }
 
@@ -61,16 +56,14 @@ class WhatsAppListenerService : NotificationListenerService() {
 
         val fullTextCombined = messageTextList.joinToString(" ")
 
-        // Extract sender name and clean text
         val (extractedSender, cleanMessage) = extractSenderAndBody(rawTitle, fullTextCombined)
 
-        // Collect all potential sender fields (Title, Conversation Title, SubText)
         val allHeaderFields = listOf(rawTitle, rawTitleBig, conversationTitle, subText, extractedSender)
 
-        // STEP 1: Verify if ANY header field contains an allowed sender's name
+        // STEP 1: Verify sender match
         val matchedSender = ALLOWED_SENDERS.find { targetSender ->
             allHeaderFields.any { header -> header.contains(targetSender, ignoreCase = true) } ||
-                    cleanMessage.contains(targetSender, ignoreCase = true)
+                    fullTextCombined.contains(targetSender, ignoreCase = true)
         }
 
         if (matchedSender == null) {
@@ -86,7 +79,7 @@ class WhatsAppListenerService : NotificationListenerService() {
                 DATE_URGENCY_KEYWORDS.any { cleanMessage.contains(it, ignoreCase = true) }
 
         if (!hasShiftKeyword || !hasTimeOrUrgency) {
-            Log.d(TAG, "Ignored: Message content from $matchedSender does not meet shift criteria.")
+            Log.d(TAG, "Ignored: Message content from $matchedSender does not meet shift criteria. (Keyword: $hasShiftKeyword, Time/Urgency: $hasTimeOrUrgency)")
             return
         }
 
@@ -104,17 +97,20 @@ class WhatsAppListenerService : NotificationListenerService() {
     }
 
     private fun extractSenderAndBody(title: String, body: String): Pair<String, String> {
-        var sender = title
-        var message = body
-
-        // Group chats format messages as "Sender Name: Message text" inside body
+        // Group chat messages in notifications usually follow "Sender Name: Message text".
+        // Ensure we only split if the prefix before the colon is short (a sender's name), not a long text containing time like "10:30".
         if (body.contains(":")) {
-            val parts = body.split(":", limit = 2)
-            sender = parts[0].trim()
-            message = parts[1].trim()
+            val colonIndex = body.indexOf(":")
+            val prefix = body.substring(0, colonIndex).trim()
+
+            // If the text before colon is relatively short and doesn't look like a sentence, treat it as a sender name
+            if (prefix.length <= 30 && !prefix.contains("\n")) {
+                val message = body.substring(colonIndex + 1).trim()
+                return Pair(prefix, message)
+            }
         }
 
-        return Pair(sender, message)
+        return Pair(title, body)
     }
 
     private fun sendWhatsAppReply(notification: Notification, replyText: String) {
