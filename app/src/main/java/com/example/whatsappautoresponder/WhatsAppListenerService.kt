@@ -15,27 +15,27 @@ class WhatsAppListenerService : NotificationListenerService() {
         private const val WHATSAPP_PACKAGE = "com.whatsapp"
         private var lastProcessedKey: String = ""
 
-        // --- CONFIGURATION RULES ---
-        private const val TARGET_GROUP = "TK Maxx Fountain Gate"
+        // =================================================================
+        // SENDER-ONLY CONFIGURATION
+        // =================================================================
 
-        // Senders who post shifts
-        private val ALLOWED_SENDERS = listOf(
-            "Mike Somervell", "Emily Mulholland", "Lacey", "Jessica", "Tina"
-        )
+        // Target Senders (Matches regardless of group or direct chat)
+        private val ALLOWED_SENDERS = listOf("Fabeha", "Maryam", "Bhai")
 
-        // Expanded shift keywords & role terms
+        // Action/Shift Keywords
         private val SHIFT_KEYWORDS = listOf(
-            "shift", "available", "come in", "pick up", "free", "hours",
-            "cover", "after", "maintenance", "fitting room", "flow", "dtf",
-            "health and beauty", "accessories"
+            "shift", "shifts", "available", "come in", "pick up", "free",
+            "hours", "cover", "covering", "need", "needed", "looking for", "slot"
         )
 
-        // EXCLUSION: Register terms
-        private val REGISTER_EXCLUSIONS = listOf("register", "reg", "till", "checkout")
+        // Time Pattern (Matches "1-6", "01:00-06:00", "12to5", "1pm", "14:00")
+        private val TIME_REGEX = Regex(
+            """\b\d{1,2}(:\d{2})?\s*(am|pm)?\s*(-|to)\s*\d{1,2}(:\d{2})?\s*(am|pm)?\b|\b\d{1,2}\s*(-|to)\s*\d{1,2}\b|\b\d{1,2}(:\d{2})?\s*(am|pm)\b""",
+            RegexOption.IGNORE_CASE
+        )
 
-        // Specific non-register roles to target when present alongside register mentions
-        private val VALID_DEPARTMENTS = listOf(
-            "maintenance", "fitting room", "flow", "dtf", "health and beauty", "accessories"
+        private val DATE_URGENCY_KEYWORDS = listOf(
+            "today", "tomorrow", "tonight", "asap", "morning", "afternoon", "evening"
         )
     }
 
@@ -44,69 +44,77 @@ class WhatsAppListenerService : NotificationListenerService() {
 
         if (sbn?.packageName != WHATSAPP_PACKAGE) return
 
-        val extras = sbn.notification.extras
+        val extras = sbn.notification.extras ?: return
 
-        val groupName = extras.getString("android.support.notification.conversationTitle")
-            ?: extras.getString(Notification.EXTRA_SUB_TEXT)
-            ?: extras.getString(Notification.EXTRA_TITLE) ?: ""
+        // Extract raw notification headers
+        val conversationTitle = extras.getString("android.conversationTitle") ?: ""
+        val subText = extras.getString(Notification.EXTRA_SUB_TEXT) ?: ""
+        val rawTitle = extras.getString(Notification.EXTRA_TITLE) ?: ""
+        val rawTitleBig = extras.getString(Notification.EXTRA_TITLE_BIG) ?: ""
 
-        val senderName = extras.getString(Notification.EXTRA_TITLE) ?: "Unknown"
-        val messageText = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: return
+        // Extract full message body (handles single text & multi-line bundled messages)
+        val messageTextList = mutableListOf<String>()
+        extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.let { messageTextList.add(it) }
 
-        Log.d(TAG, "Notification Received -> Group: [$groupName] | Sender: [$senderName] | Text: [$messageText]")
+        val textLines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
+        textLines?.forEach { messageTextList.add(it.toString()) }
 
-        // 1. Ensure it's from our target group
-        if (!groupName.contains(TARGET_GROUP, ignoreCase = true)) {
-            Log.d(TAG, "Ignored: Group name did not match target group.")
+        val fullTextCombined = messageTextList.joinToString(" ")
+
+        // Extract sender name and clean text
+        val (extractedSender, cleanMessage) = extractSenderAndBody(rawTitle, fullTextCombined)
+
+        // Collect all potential sender fields (Title, Conversation Title, SubText)
+        val allHeaderFields = listOf(rawTitle, rawTitleBig, conversationTitle, subText, extractedSender)
+
+        // STEP 1: Verify if ANY header field contains an allowed sender's name
+        val matchedSender = ALLOWED_SENDERS.find { targetSender ->
+            allHeaderFields.any { header -> header.contains(targetSender, ignoreCase = true) } ||
+                    cleanMessage.contains(targetSender, ignoreCase = true)
+        }
+
+        if (matchedSender == null) {
+            Log.d(TAG, "Ignored: Notification not from target senders (${ALLOWED_SENDERS.joinToString()}). Headers: $allHeaderFields")
             return
         }
 
-        // 2. Check if the sender is in our allowed list
-        val isAllowedSender = ALLOWED_SENDERS.any { senderName.contains(it, ignoreCase = true) }
-        if (!isAllowedSender) {
-            Log.d(TAG, "Ignored: Sender '$senderName' is not in the allowed list.")
+        Log.d(TAG, "Notification Received from Sender: '$matchedSender' | Text: '$cleanMessage'")
+
+        // STEP 2: Shift Offer Criteria Check
+        val hasShiftKeyword = SHIFT_KEYWORDS.any { cleanMessage.contains(it, ignoreCase = true) }
+        val hasTimeOrUrgency = TIME_REGEX.containsMatchIn(cleanMessage) ||
+                DATE_URGENCY_KEYWORDS.any { cleanMessage.contains(it, ignoreCase = true) }
+
+        if (!hasShiftKeyword || !hasTimeOrUrgency) {
+            Log.d(TAG, "Ignored: Message content from $matchedSender does not meet shift criteria.")
             return
         }
 
-        // 3. Check for shift indicators (keywords or time formats like 1:30-6:30 or 10-6:30)
-        val hasShiftKeyword = SHIFT_KEYWORDS.any { messageText.contains(it, ignoreCase = true) }
-        val hasTimePattern = messageText.contains(
-            Regex("\\d{1,2}(:\\d{2})?\\s*(am|pm)?\\s*(-|to)\\s*\\d{1,2}(:\\d{2})?\\s*(am|pm)?", RegexOption.IGNORE_CASE)
-        )
-
-        if (!hasShiftKeyword && !hasTimePattern) {
-            Log.d(TAG, "Ignored: Message does not look like a shift offer.")
-            return
-        }
-
-        // 4. Handle Register vs Non-Register shifts
-        val mentionsRegister = REGISTER_EXCLUSIONS.any { messageText.contains(it, ignoreCase = true) }
-        val matchedDepartment = VALID_DEPARTMENTS.find { messageText.contains(it, ignoreCase = true) }
-
-        // If it ONLY mentions a register shift and NO other valid department, skip it
-        if (mentionsRegister && matchedDepartment == null) {
-            Log.d(TAG, "Ignored: Strictly a register shift.")
-            return
-        }
-
-        // 5. Determine the tailored reply text
-        val autoReplyText = when {
-            matchedDepartment != null && mentionsRegister -> "I can do $matchedDepartment"
-            matchedDepartment != null -> "I can do $matchedDepartment"
-            else -> "I can"
-        }
-
-        // 6. Prevent loops/duplicates
-        val notificationKey = "${sbn.key}_$messageText"
+        // STEP 3: Prevent Duplicate Sends
+        val notificationKey = "${sbn.key}_$cleanMessage"
         if (notificationKey == lastProcessedKey) {
             Log.d(TAG, "Ignored: Duplicate notification key.")
             return
         }
 
-        // All conditions met! Send reply
-        Log.d(TAG, "Valid shift found! Sending reply '$autoReplyText'...")
+        // STEP 4: Trigger Direct Reply
+        Log.d(TAG, "Valid shift detected from $matchedSender! Responding 'I can'...")
         lastProcessedKey = notificationKey
-        sendWhatsAppReply(sbn.notification, autoReplyText)
+        sendWhatsAppReply(sbn.notification, "I can")
+    }
+
+    private fun extractSenderAndBody(title: String, body: String): Pair<String, String> {
+        var sender = title
+        var message = body
+
+        // Group chats format messages as "Sender Name: Message text" inside body
+        if (body.contains(":")) {
+            val parts = body.split(":", limit = 2)
+            sender = parts[0].trim()
+            message = parts[1].trim()
+        }
+
+        return Pair(sender, message)
     }
 
     private fun sendWhatsAppReply(notification: Notification, replyText: String) {
@@ -123,14 +131,9 @@ class WhatsAppListenerService : NotificationListenerService() {
             }
 
             action.actionIntent.send(this, 0, intent)
-            Log.d(TAG, "Shift auto-reply sent successfully!")
-
-            // --- START LOUD ALARM TO WAKE UP ---
-            AlarmManager.startAlarm(this)
-
+            Log.d(TAG, "Auto-reply 'I can' sent successfully!")
         } catch (e: Exception) {
-            Log.e(TAG, "Exception while sending reply", e)
-            e.printStackTrace()
+            Log.e(TAG, "Exception while sending inline reply", e)
         }
     }
 

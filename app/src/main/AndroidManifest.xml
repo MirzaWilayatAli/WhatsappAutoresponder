@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- 1. PERMISSION (outside application tag) -->
+    <!-- Permissions required for Notification Reading and Posting -->
     <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -24,12 +24,11 @@
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- 2. SERVICE -->
+        <!-- Notification Listener Service -->
         <service
             android:name=".WhatsAppListenerService"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
@@ -38,11 +37,6 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
-
-        <!-- 3. ADD RECEIVER HERE FOR THE STOP ALARM BUTTON -->
-        <receiver
-            android:name=".StopAlarmReceiver"
-            android:exported="false" />
 
     </application>
 
